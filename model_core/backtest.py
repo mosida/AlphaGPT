@@ -1,16 +1,17 @@
 import torch
+from .config import ModelConfig
 
 class MemeBacktest:
     def __init__(self):
         self.trade_size = 1000.0
-        self.min_liq = 500000.0
+        self.min_liq = ModelConfig.MIN_LIQUIDITY
         self.base_fee = 0.0060
 
     def evaluate(self, factors, raw_data, target_ret):
         liquidity = raw_data['liquidity']
         signal = torch.sigmoid(factors)
         is_safe = (liquidity > self.min_liq).float()
-        position = (signal > 0.85).float() * is_safe
+        position = (signal > 0.55).float() * is_safe
         impact_slippage = self.trade_size / (liquidity + 1e-9)
         impact_slippage = torch.clamp(impact_slippage, 0.0, 0.05)
         total_slippage_one_way = self.base_fee + impact_slippage
@@ -24,6 +25,6 @@ class MemeBacktest:
         big_drawdowns = (net_pnl < -0.05).float().sum(dim=1)
         score = cum_ret - (big_drawdowns * 2.0)
         activity = position.sum(dim=1)
-        score = torch.where(activity < 5, torch.tensor(-10.0, device=score.device), score)
+        score = torch.where(activity < 5, torch.tensor(-1.0, device=score.device), score)
         final_fitness = torch.median(score)
         return final_fitness, cum_ret.mean().item()

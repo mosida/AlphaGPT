@@ -56,3 +56,13 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Training outputs
+best_formula.json
+training_history.json
+
+# Data files
+data/*.csv
+
+# Claude Code
+.claude/

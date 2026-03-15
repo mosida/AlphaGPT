@@ -88,9 +88,13 @@ def main():
 
     feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V"][: FeatureEngineer.INPUT_DIM]
 
+    # Fee curriculum: ramp from 0.05% to 0.1% (Binance spot)
+    fee_start, fee_end = 0.0005, 0.001
+
     print(f"\nStarting AlphaGPT training...")
     print(f"  Steps: {ModelConfig.TRAIN_STEPS}, Batch: {ModelConfig.BATCH_SIZE}")
     print(f"  LoRD: {'ON' if use_lord else 'OFF'}")
+    print(f"  Fee curriculum: {fee_start*100:.2f}% -> {fee_end*100:.2f}%")
     print(f"  Device: {ModelConfig.DEVICE}")
     print(f"  Vocab: {feat_names} + {[c[0] for c in OPS_CONFIG]}")
     print()
@@ -98,17 +102,25 @@ def main():
     pbar = tqdm(range(ModelConfig.TRAIN_STEPS))
 
     for step in pbar:
+        # Fee curriculum: linear ramp
+        progress = step / max(ModelConfig.TRAIN_STEPS - 1, 1)
+        current_fee = fee_start + (fee_end - fee_start) * progress
+
         bs = ModelConfig.BATCH_SIZE
         inp = torch.zeros((bs, 1), dtype=torch.long, device=ModelConfig.DEVICE)
 
         log_probs = []
+        entropies = []
         tokens_list = []
+        values = []
 
         for _ in range(ModelConfig.MAX_FORMULA_LEN):
-            logits, _, _ = model(inp)
+            logits, value, _ = model(inp)
             dist = Categorical(logits=logits)
             action = dist.sample()
             log_probs.append(dist.log_prob(action))
+            entropies.append(dist.entropy())
+            values.append(value.squeeze(-1))
             tokens_list.append(action)
             inp = torch.cat([inp, action.unsqueeze(1)], dim=1)
 
@@ -126,7 +138,7 @@ def main():
                 rewards[i] = -2.0
                 continue
 
-            score, ret_val = bt.evaluate(res, loader.raw_data_cache, loader.target_ret)
+            score, ret_val = bt.evaluate(res, loader.raw_data_cache, loader.target_ret, fee_override=current_fee)
             if torch.isnan(score) or torch.isinf(score):
                 rewards[i] = -5.0
                 continue
@@ -140,15 +152,18 @@ def main():
                     f"  [NEW BEST] Score={score:.2f} | Ret={ret_val:.2%} | {readable}"
                 )
 
-        # Policy gradient with NaN guards
-        rew_std = rewards.std()
-        if rew_std < 1e-8:
-            # All rewards identical — skip gradient update
-            adv = torch.zeros_like(rewards)
-        else:
-            adv = (rewards - rewards.mean()) / (rew_std + 1e-5)
+        # Actor-Critic with entropy bonus
+        baseline = torch.stack(values).mean(dim=0).detach()
+        adv = rewards - baseline
+        rew_std = adv.std()
+        if rew_std > 1e-8:
+            adv = adv / (rew_std + 1e-5)
 
-        loss = sum(-lp * adv for lp in log_probs).mean()
+        policy_loss = sum(-lp * adv for lp in log_probs).mean()
+        value_loss = sum((v - rewards) ** 2 for v in values).mean()
+        entropy_bonus = sum(e for e in entropies).mean()
+
+        loss = policy_loss + 0.01 * value_loss - 0.02 * entropy_bonus
 
         if torch.isnan(loss) or torch.isinf(loss):
             continue  # skip corrupted step
@@ -162,7 +177,7 @@ def main():
             lord_opt.step()
 
         avg_reward = rewards.mean().item()
-        postfix = {"AvgRew": f"{avg_reward:.3f}", "Best": f"{best_score:.3f}"}
+        postfix = {"AvgRew": f"{avg_reward:.3f}", "Best": f"{best_score:.3f}", "Fee": f"{current_fee*100:.2f}%"}
 
         if use_lord and step % 100 == 0 and rank_monitor:
             sr = rank_monitor.compute()

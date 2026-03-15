@@ -5,16 +5,17 @@ class MemeBacktest:
     def __init__(self):
         self.trade_size = 1000.0
         self.min_liq = ModelConfig.MIN_LIQUIDITY
-        self.base_fee = 0.0060
+        self.base_fee = 0.0010
 
-    def evaluate(self, factors, raw_data, target_ret):
+    def evaluate(self, factors, raw_data, target_ret, fee_override=None):
         liquidity = raw_data['liquidity']
         signal = torch.sigmoid(factors)
         is_safe = (liquidity > self.min_liq).float()
         position = (signal > 0.55).float() * is_safe
         impact_slippage = self.trade_size / (liquidity + 1e-9)
         impact_slippage = torch.clamp(impact_slippage, 0.0, 0.05)
-        total_slippage_one_way = self.base_fee + impact_slippage
+        fee = fee_override if fee_override is not None else self.base_fee
+        total_slippage_one_way = fee + impact_slippage
         prev_pos = torch.roll(position, 1, dims=1)
         prev_pos[:, 0] = 0
         turnover = torch.abs(position - prev_pos)

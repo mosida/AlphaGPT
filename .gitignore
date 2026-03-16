@@ -60,6 +60,7 @@ Thumbs.db
 # Training outputs
 best_formula.json
 training_history.json
+validated_formula.json
 
 # Data files
 data/*.csv

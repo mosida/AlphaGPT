@@ -192,25 +192,29 @@ def main():
     # --- Save results ---
     out_dir = os.path.dirname(os.path.abspath(__file__))
 
-    with open(os.path.join(out_dir, "best_formula.json"), "w") as f:
-        json.dump(
-            {
-                "tokens": best_formula,
-                "readable": decode_formula(best_formula, feat_names) if best_formula else None,
-                "score": best_score,
-            },
-            f,
-            indent=2,
-        )
+    if best_formula is not None:
+        with open(os.path.join(out_dir, "best_formula.json"), "w") as f:
+            json.dump(
+                {
+                    "tokens": best_formula,
+                    "readable": decode_formula(best_formula, feat_names),
+                    "score": best_score,
+                },
+                f,
+                indent=2,
+            )
 
     with open(os.path.join(out_dir, "training_history.json"), "w") as f:
         json.dump(history, f)
 
     print(f"\nTraining complete!")
-    print(f"  Best score: {best_score:.4f}")
     if best_formula:
+        print(f"  Best score: {best_score:.4f}")
         print(f"  Best formula: {decode_formula(best_formula, feat_names)}")
-    print(f"  Saved: best_formula.json, training_history.json")
+        print(f"  Saved: best_formula.json, training_history.json")
+    else:
+        print(f"  No valid formula found.")
+        print(f"  Saved: training_history.json")
 
 
 if __name__ == "__main__":

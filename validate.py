@@ -42,14 +42,24 @@ def load_split_data(csv_path, train_ratio=0.7, limit_tokens=None):
     df_train = df[df["timestamp"] < split_time]
     df_test = df[df["timestamp"] >= split_time]
 
-    print(f"  Total: {len(timestamps)} timesteps, {len(symbols)} pairs")
+    # Fix: ensure both splits use the exact same asset pool
+    train_symbols = set(df_train["symbol"].unique())
+    test_symbols = set(df_test["symbol"].unique())
+    common_symbols = sorted(train_symbols & test_symbols)
+    dropped = (train_symbols | test_symbols) - set(common_symbols)
+    if dropped:
+        print(f"  Dropped (not in both splits): {dropped}")
+    df_train = df_train[df_train["symbol"].isin(common_symbols)]
+    df_test = df_test[df_test["symbol"].isin(common_symbols)]
+
+    print(f"  Total: {len(timestamps)} timesteps, {len(common_symbols)} pairs (common)")
     print(f"  Train: {df_train.timestamp.min()} ~ {df_train.timestamp.max()} ({split_idx} bars)")
     print(f"  Test:  {df_test.timestamp.min()} ~ {df_test.timestamp.max()} ({len(timestamps) - split_idx} bars)")
 
-    def build_tensors(sub_df):
+    def build_tensors(sub_df, symbol_order):
         def to_tensor(col):
             pivot = sub_df.pivot(index="timestamp", columns="symbol", values=col)
-            pivot = pivot.ffill().fillna(0.0)
+            pivot = pivot.reindex(columns=symbol_order).ffill().fillna(0.0)
             return torch.tensor(pivot.values.T, dtype=torch.float32, device=ModelConfig.DEVICE)
 
         close_t = to_tensor("close")
@@ -77,8 +87,8 @@ def load_split_data(csv_path, train_ratio=0.7, limit_tokens=None):
 
         return feat_tensor, raw_data, target_ret
 
-    train_data = build_tensors(df_train)
-    test_data = build_tensors(df_test)
+    train_data = build_tensors(df_train, common_symbols)
+    test_data = build_tensors(df_test, common_symbols)
 
     return train_data, test_data
 

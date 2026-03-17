@@ -138,7 +138,7 @@ def main():
                 rewards[i] = -2.0
                 continue
 
-            score, ret_val = bt.evaluate(res, loader.raw_data_cache, loader.target_ret, fee_override=current_fee)
+            score, ret_val, _ = bt.evaluate(res, loader.raw_data_cache, loader.target_ret, fee_override=current_fee)
             if torch.isnan(score) or torch.isinf(score):
                 rewards[i] = -5.0
                 continue

@@ -97,7 +97,7 @@ class AlphaEngine:
                     rewards[i] = -2.0
                     continue
                 
-                score, ret_val = self.bt.evaluate(res, self.loader.raw_data_cache, self.loader.target_ret)
+                score, ret_val, _ = self.bt.evaluate(res, self.loader.raw_data_cache, self.loader.target_ret)
                 rewards[i] = score
                 
                 if score.item() > self.best_score:

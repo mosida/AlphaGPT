@@ -91,7 +91,19 @@ def load_split_data(csv_path, train_ratio=0.7, limit_tokens=None):
     train_data = build_tensors(df_train, common_symbols)
     test_data = build_tensors(df_test, common_symbols)
 
-    return train_data, test_data
+    time_meta = {
+        "train_start": str(df_train.timestamp.min()),
+        "train_end": str(df_train.timestamp.max()),
+        "test_start": str(df_test.timestamp.min()),
+        "test_end": str(df_test.timestamp.max()),
+        "train_bars": split_idx,
+        "test_bars": len(timestamps) - split_idx,
+        "test_days": (df_test.timestamp.max() - df_test.timestamp.min()).days,
+        "train_days": (df_train.timestamp.max() - df_train.timestamp.min()).days,
+        "n_pairs": len(common_symbols),
+    }
+
+    return train_data, test_data, time_meta
 
 
 def decode_formula(tokens, feat_names=None, ops_list=None):
@@ -111,16 +123,16 @@ def decode_formula(tokens, feat_names=None, ops_list=None):
 
 
 def evaluate_formula(formula_tokens, feat_tensor, raw_data, target_ret, vm, bt, fee):
-    """Evaluate a single formula and return score + return."""
+    """Evaluate a single formula and return score, return, turnover."""
     res = vm.execute(formula_tokens, feat_tensor)
     if res is None:
-        return None, None
+        return None, None, None
     if res.std() < 1e-4:
-        return None, None
-    score, ret_val = bt.evaluate(res, raw_data, target_ret, fee_override=fee)
+        return None, None, None
+    score, ret_val, turnover = bt.evaluate(res, raw_data, target_ret, fee_override=fee)
     if torch.isnan(score) or torch.isinf(score):
-        return None, None
-    return score.item(), ret_val
+        return None, None, None
+    return score.item(), ret_val, turnover
 
 
 def set_seed(seed):
@@ -155,13 +167,20 @@ def save_json(path, payload):
         json.dump(payload, f, indent=2)
 
 
-def build_single_report(args, seed, fee_start, fee_end, reward_history, valid_results):
+def build_single_report(args, seed, fee_start, fee_end, reward_history, valid_results, time_meta):
     passed = [r for r in valid_results if r["test_score"] is not None and r["test_score"] > 0]
     failed = [r for r in valid_results if r["test_score"] is not None and r["test_score"] <= 0]
     top_candidate = valid_results[0] if valid_results else None
     best_passed = passed[0] if passed else None
     mean_avg_reward = mean_or_none(reward_history)
     final_avg_reward = reward_history[-1] if reward_history else None
+
+    test_days = time_meta["test_days"]
+
+    def return_per_30d(ret):
+        if ret is None or test_days is None or test_days <= 0:
+            return None
+        return ret * (30.0 / test_days)
 
     return {
         "config": {
@@ -174,18 +193,24 @@ def build_single_report(args, seed, fee_start, fee_end, reward_history, valid_re
             "fee_end": fee_end,
             "seed": seed,
         },
+        "time_meta": time_meta,
         "summary": {
             "candidates_evaluated": len(valid_results),
             "passed": len(passed),
             "failed": len(failed),
             "pass_rate": (len(passed) / len(valid_results)) if valid_results else 0.0,
+            "test_days": test_days,
             "best_train_score": top_candidate["train_score"] if top_candidate else None,
             "best_test_score": top_candidate["test_score"] if top_candidate else None,
             "best_test_return": top_candidate["test_ret"] if top_candidate else None,
+            "best_test_return_per_30d": return_per_30d(top_candidate["test_ret"]) if top_candidate else None,
+            "best_test_turnover": top_candidate.get("test_turnover") if top_candidate else None,
             "best_formula": top_candidate["readable"] if top_candidate else None,
             "best_passed_train_score": best_passed["train_score"] if best_passed else None,
             "best_passed_test_score": best_passed["test_score"] if best_passed else None,
             "best_passed_test_return": best_passed["test_ret"] if best_passed else None,
+            "best_passed_test_return_per_30d": return_per_30d(best_passed["test_ret"]) if best_passed else None,
+            "best_passed_test_turnover": best_passed.get("test_turnover") if best_passed else None,
             "best_passed_formula": best_passed["readable"] if best_passed else None,
             "final_avg_reward": final_avg_reward,
             "mean_avg_reward": mean_avg_reward,
@@ -198,6 +223,8 @@ def build_single_report(args, seed, fee_start, fee_end, reward_history, valid_re
                 "train_score": r["train_score"],
                 "test_score": r["test_score"],
                 "test_return": r["test_ret"],
+                "test_return_per_30d": return_per_30d(r["test_ret"]),
+                "test_turnover": r.get("test_turnover"),
                 "passed": r["test_score"] is not None and r["test_score"] > 0,
             }
             for i, r in enumerate(valid_results)
@@ -205,7 +232,7 @@ def build_single_report(args, seed, fee_start, fee_end, reward_history, valid_re
     }
 
 
-def run_validation_once(args, train_data, test_data, run_index=1, total_runs=1, seed=None):
+def run_validation_once(args, train_data, test_data, time_meta, run_index=1, total_runs=1, seed=None):
     train_feat, train_raw, train_ret = train_data
     test_feat, test_raw, test_ret = test_data
 
@@ -270,7 +297,7 @@ def run_validation_once(args, train_data, test_data, run_index=1, total_runs=1, 
             if res.std() < 1e-4:
                 rewards[i] = -2.0
                 continue
-            score, ret_val = bt.evaluate(res, train_raw, train_ret, fee_override=current_fee)
+            score, ret_val, _ = bt.evaluate(res, train_raw, train_ret, fee_override=current_fee)
             if torch.isnan(score) or torch.isinf(score):
                 rewards[i] = -5.0
                 continue
@@ -319,7 +346,7 @@ def run_validation_once(args, train_data, test_data, run_index=1, total_runs=1, 
 
     results = []
     for formula, train_score in top_formulas:
-        test_score, test_return = evaluate_formula(formula, test_feat, test_raw, test_ret, vm, bt, args.fee)
+        test_score, test_return, test_turnover = evaluate_formula(formula, test_feat, test_raw, test_ret, vm, bt, args.fee)
         readable = decode_formula(formula, feat_names)
         results.append({
             "formula": formula,
@@ -327,20 +354,25 @@ def run_validation_once(args, train_data, test_data, run_index=1, total_runs=1, 
             "train_score": train_score,
             "test_score": test_score,
             "test_ret": test_return,
+            "test_turnover": test_turnover,
         })
 
     valid_results = [r for r in results if r["test_score"] is not None]
     valid_results.sort(key=lambda x: x["test_score"], reverse=True)
-    report = build_single_report(args, seed, fee_start, fee_end, reward_history, valid_results)
+    report = build_single_report(args, seed, fee_start, fee_end, reward_history, valid_results, time_meta)
 
-    print(f"{'Rank':<5} {'Train':>8} {'Test':>8} {'TestRet':>9}  Formula")
-    print("-" * 80)
+    test_days = time_meta["test_days"]
+    print(f"{'Rank':<5} {'Train':>8} {'Test':>8} {'TestRet':>9} {'Ret/30d':>8} {'Turn':>6}  Formula")
+    print("-" * 95)
     for i, r in enumerate(valid_results[:10]):
         marker = " ✓" if r["test_score"] > 0 else ""
-        print(f"  {i+1:<3} {r['train_score']:>+8.4f} {r['test_score']:>+8.4f} {r['test_ret']:>+8.2%}  {r['readable']}{marker}")
+        ret_30d = r["test_ret"] * (30.0 / test_days) if r["test_ret"] is not None and test_days > 0 else 0.0
+        turnover_str = f"{r['test_turnover']:.1f}" if r.get("test_turnover") is not None else "N/A"
+        print(f"  {i+1:<3} {r['train_score']:>+8.4f} {r['test_score']:>+8.4f} {r['test_ret']:>+8.2%} {ret_30d:>+7.2%} {turnover_str:>6}  {r['readable']}{marker}")
 
     summary = report["summary"]
     print(f"\n--- Summary ---")
+    print(f"  Test window:          {test_days} days")
     print(f"  Candidates evaluated: {summary['candidates_evaluated']}")
     print(f"  Passed (test > 0):    {summary['passed']}")
     print(f"  Failed (test <= 0):   {summary['failed']}")
@@ -391,6 +423,9 @@ def build_multi_run_report(args, reports):
             "avg_best_train_score": mean_or_none([s["best_train_score"] for s in summaries]),
             "avg_best_test_score": mean_or_none([s["best_test_score"] for s in summaries]),
             "avg_best_test_return": mean_or_none([s["best_test_return"] for s in summaries]),
+            "avg_best_test_return_per_30d": mean_or_none([s["best_test_return_per_30d"] for s in summaries]),
+            "avg_best_test_turnover": mean_or_none([s["best_test_turnover"] for s in summaries]),
+            "test_days": summaries[0]["test_days"] if summaries else None,
             "avg_final_avg_reward": mean_or_none([s["final_avg_reward"] for s in summaries]),
             "avg_mean_avg_reward": mean_or_none([s["mean_avg_reward"] for s in summaries]),
             "runs_with_positive_candidate": sum(
@@ -434,7 +469,7 @@ def main():
     print(f"=== AlphaGPT Out-of-Sample Validation ===\n")
     print(f"Loading and splitting data (train={args.train_ratio:.0%} / test={1-args.train_ratio:.0%})...")
 
-    train_data, test_data = \
+    train_data, test_data, time_meta = \
         load_split_data(args.csv, train_ratio=args.train_ratio)
 
     train_feat, _, _ = train_data
@@ -452,6 +487,7 @@ def main():
             args,
             train_data,
             test_data,
+            time_meta,
             run_index=run_idx + 1,
             total_runs=args.runs,
             seed=seed,
@@ -495,10 +531,13 @@ def main():
 
         agg = aggregate["aggregate"]
         print(f"\n=== Aggregate Summary ({args.runs} runs) ===")
+        print(f"  Test window:         {agg['test_days']} days" if agg["test_days"] is not None else "  Test window:         N/A")
         print(f"  Avg pass rate:       {agg['avg_pass_rate']:.2%}" if agg["avg_pass_rate"] is not None else "  Avg pass rate:       N/A")
         print(f"  Pass rate std:       {agg['pass_rate_std']:.2%}" if agg["pass_rate_std"] is not None else "  Pass rate std:       N/A")
         print(f"  Avg best test score: {agg['avg_best_test_score']:+.4f}" if agg["avg_best_test_score"] is not None else "  Avg best test score: N/A")
         print(f"  Avg best return:     {agg['avg_best_test_return']:+.2%}" if agg["avg_best_test_return"] is not None else "  Avg best return:     N/A")
+        print(f"  Avg return/30d:      {agg['avg_best_test_return_per_30d']:+.2%}" if agg["avg_best_test_return_per_30d"] is not None else "  Avg return/30d:      N/A")
+        print(f"  Avg turnover:        {agg['avg_best_test_turnover']:.1f}" if agg["avg_best_test_turnover"] is not None else "  Avg turnover:        N/A")
         print(f"  Best run:            #{agg['best_run_index']} (seed={agg['best_run_seed']})" if agg["best_run_index"] is not None else "  Best run:            N/A")
         print(f"  Aggregate report:    {aggregate_path}")
 

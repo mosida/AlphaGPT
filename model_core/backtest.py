@@ -28,4 +28,5 @@ class MemeBacktest:
         activity = position.sum(dim=1)
         score = torch.where(activity < 5, torch.tensor(-1.0, device=score.device), score)
         final_fitness = torch.median(score)
-        return final_fitness, cum_ret.mean().item()
+        avg_turnover = turnover.sum(dim=1).mean().item()
+        return final_fitness, cum_ret.mean().item(), avg_turnover

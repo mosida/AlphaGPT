@@ -62,6 +62,7 @@ best_formula.json
 training_history.json
 validated_formula.json
 validation_report_*.json
+wf_report_*.json
 
 # Data files
 data/*.csv

@@ -258,6 +258,114 @@ def discover_formulas(args, train_data, feat_names, seed=42):
     return formulas, scores
 
 
+def multi_seed_discover(args, train_data, feat_names, seeds):
+    """Run discover_formulas() with multiple seeds and pool results.
+
+    Deduplicates by token sequence; when the same formula appears across
+    seeds, keeps the highest score.  Tracks which seeds discovered each
+    formula (provenance) for downstream seed-support filtering.
+
+    Returns:
+        formulas: list of token lists (deduplicated, sorted by score desc)
+        scores: list of corresponding best scores
+        per_seed: list of dicts with per-seed discovery stats
+        provenance: list of sets, provenance[i] = set of seeds that found formulas[i]
+    """
+    pool = {}  # tuple(tokens) -> (formula, best_score)
+    seed_map = {}  # tuple(tokens) -> set of seeds
+    per_seed = []
+
+    for seed in seeds:
+        seed_formulas, seed_scores = discover_formulas(
+            args, train_data, feat_names, seed=seed
+        )
+        n_new = 0
+        for f, s in zip(seed_formulas, seed_scores):
+            key = tuple(f)
+            if key not in pool:
+                n_new += 1
+                seed_map[key] = set()
+            seed_map[key].add(seed)
+            if key not in pool or s > pool[key][1]:
+                pool[key] = (f, s)
+
+        per_seed.append({
+            "seed": seed,
+            "n_discovered": len(seed_formulas),
+            "n_new_unique": n_new,
+            "best_score": max(seed_scores) if seed_scores else None,
+        })
+        total = len(pool)
+        print(f"\n  Seed {seed}: {len(seed_formulas)} formulas, {n_new} new unique → pool={total}")
+
+    # Sort pool by score descending
+    ranked = sorted(pool.values(), key=lambda x: x[1], reverse=True)
+    formulas = [f for f, _ in ranked]
+    scores = [s for _, s in ranked]
+    provenance = [seed_map[tuple(f)] for f in formulas]
+
+    print(f"\n  Multi-seed pooling complete: {len(formulas)} unique formulas from {len(seeds)} seeds")
+    return formulas, scores, per_seed, provenance
+
+
+def filter_candidates(formulas, scores, provenance, train_data,
+                      min_score=0.02, max_turnover=10.0, fee=0.001):
+    """Filter candidate formulas by training score and turnover before clustering.
+
+    Returns:
+        filtered formulas, scores, provenance (aligned lists)
+        stats dict for reporting
+    """
+    train_feat, train_raw, train_ret = train_data
+    vm = StackVM()
+    bt = MemeBacktest()
+
+    kept_f, kept_s, kept_p = [], [], []
+    n_fail_score, n_fail_turnover = 0, 0
+
+    for f, s, p in zip(formulas, scores, provenance):
+        if s < min_score:
+            n_fail_score += 1
+            continue
+        res = vm.execute(f, train_feat)
+        if res is None:
+            n_fail_score += 1
+            continue
+        _, _, turnover = bt.evaluate(res, train_raw, train_ret, fee_override=fee)
+        if turnover > max_turnover:
+            n_fail_turnover += 1
+            continue
+        kept_f.append(f)
+        kept_s.append(s)
+        kept_p.append(p)
+
+    stats = {
+        "total": len(formulas),
+        "dropped_score": n_fail_score,
+        "dropped_turnover": n_fail_turnover,
+        "kept": len(kept_f),
+    }
+    return kept_f, kept_s, kept_p, stats
+
+
+def filter_clusters_by_seed_support(selected, clusters, provenance, min_support=2):
+    """Keep only clusters whose member formulas span >= min_support seeds.
+
+    Args:
+        provenance: list of sets, provenance[i] = seeds that found formulas[i]
+    """
+    out_selected, out_clusters = [], []
+    for rep_idx, members in clusters:
+        cluster_seeds = set()
+        for m in members:
+            if m < len(provenance):
+                cluster_seeds |= provenance[m]
+        if len(cluster_seeds) >= min_support:
+            out_selected.append(rep_idx)
+            out_clusters.append((rep_idx, members))
+    return out_selected, out_clusters
+
+
 # ---------------------------------------------------------------------------
 # Bar-level equity curve utilities
 # ---------------------------------------------------------------------------
@@ -483,9 +591,16 @@ def main():
     parser.add_argument("--batch", type=int, default=512, help="Batch size")
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--fee", type=float, default=0.001, help="Fee rate (0.001 = 0.1%%)")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seeds", type=str, default="42",
+                        help="Comma-separated seeds for multi-seed pooling (e.g. 42,123,456)")
     parser.add_argument("--max-corr", type=float, default=0.5,
                         help="Max correlation for formula clustering (lower = more diverse)")
+    parser.add_argument("--min-score", type=float, default=0.02,
+                        help="Min training score for formula inclusion")
+    parser.add_argument("--max-turnover", type=float, default=10.0,
+                        help="Max training turnover for formula inclusion")
+    parser.add_argument("--min-seed-support", type=int, default=None,
+                        help="Min seeds a cluster must span (default: 2 for multi-seed, 1 for single)")
     parser.add_argument("--wf-days", type=int, default=30,
                         help="Walk-forward window size in days")
     parser.add_argument("--pairs", type=int, default=None, help="Limit number of pairs")
@@ -493,6 +608,11 @@ def main():
 
     if args.csv is None:
         args.csv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "ohlcv_4h.csv")
+
+    # Parse seeds
+    seeds = [int(s.strip()) for s in args.seeds.split(",")]
+    if args.min_seed_support is None:
+        args.min_seed_support = 2 if len(seeds) > 1 else 1
 
     feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V"][:FeatureEngineer.INPUT_DIM]
     out_dir = os.path.dirname(os.path.abspath(__file__))
@@ -505,7 +625,8 @@ def main():
     print(f"  Fee:       {args.fee*100:.2f}%")
     print(f"  Max corr:  {args.max_corr}")
     print(f"  WF window: {args.wf_days} days")
-    print(f"  Seed:      {args.seed}")
+    print(f"  Seeds:     {seeds} ({len(seeds)} runs)")
+    print(f"  Filters:   score>={args.min_score}, turnover<={args.max_turnover}, seed_support>={args.min_seed_support}")
 
     # --- 1. Load and split data ---
     print(f"\nLoading and splitting data (train={args.train_ratio:.0%} / test={1-args.train_ratio:.0%})...")
@@ -517,11 +638,35 @@ def main():
     print(f"  Train features: {train_feat.shape}")
     print(f"  Test features:  {test_feat.shape}")
 
-    # --- 2. Discover formulas ---
-    formulas, scores = discover_formulas(args, train_data, feat_names, seed=args.seed)
+    # --- 2. Discover formulas (multi-seed pooling) ---
+    if len(seeds) == 1:
+        formulas, scores = discover_formulas(args, train_data, feat_names, seed=seeds[0])
+        per_seed = [{"seed": seeds[0], "n_discovered": len(formulas),
+                     "n_new_unique": len(formulas),
+                     "best_score": max(scores) if scores else None}]
+        provenance = [{seeds[0]} for _ in formulas]
+    else:
+        formulas, scores, per_seed, provenance = multi_seed_discover(
+            args, train_data, feat_names, seeds
+        )
 
     if not formulas:
         print("\n  No formulas discovered. Exiting.")
+        return
+
+    # --- 2b. Quality filtering (score + turnover) ---
+    print(f"\n--- Phase 1b: Quality Filtering ---")
+    print(f"  Pool: {len(formulas)} candidates")
+    formulas, scores, provenance, filter_stats = filter_candidates(
+        formulas, scores, provenance, train_data,
+        min_score=args.min_score, max_turnover=args.max_turnover, fee=args.fee
+    )
+    print(f"  Dropped by score<{args.min_score}: {filter_stats['dropped_score']}")
+    print(f"  Dropped by turnover>{args.max_turnover}: {filter_stats['dropped_turnover']}")
+    print(f"  Kept: {filter_stats['kept']}")
+
+    if not formulas:
+        print("\n  No formulas survived filtering. Exiting.")
         return
 
     # --- 3. Cluster by signal correlation (on train data) ---
@@ -533,13 +678,27 @@ def main():
     scores_dict = {i: scores[i] for i in range(len(scores))}
     selected, clusters = greedy_cluster(formulas, scores_dict, signals, max_corr=args.max_corr)
 
-    print(f"  Clusters: {len(clusters)}")
+    print(f"  Clusters (pre-seed-filter): {len(clusters)}")
+
+    # --- 3a. Seed-support filter on clusters ---
+    if args.min_seed_support > 1:
+        pre_count = len(clusters)
+        selected, clusters = filter_clusters_by_seed_support(
+            selected, clusters, provenance, min_support=args.min_seed_support
+        )
+        print(f"  Clusters after seed_support>={args.min_seed_support}: {len(clusters)} (dropped {pre_count - len(clusters)})")
+
     for rep_idx, members in clusters:
         readable = decode_formula(formulas[rep_idx], feat_names)
-        print(f"    Cluster (rep={rep_idx}, members={len(members)}, score={scores[rep_idx]:+.4f}): {readable}")
+        cluster_seeds = set()
+        for m in members:
+            if m < len(provenance):
+                cluster_seeds |= provenance[m]
+        print(f"    Cluster (rep={rep_idx}, members={len(members)}, seeds={sorted(cluster_seeds)}, score={scores[rep_idx]:+.4f}): {readable}")
 
     if not selected:
-        print("\n  No diverse formulas selected. Exiting.")
+        print("\n  No clusters survived seed-support filter.")
+        print("  Conclusion: current search space has no cross-seed reproducible alpha.")
         return
 
     # --- 3b. Compute normalization stats from TRAINING data (causal) ---
@@ -610,6 +769,21 @@ def main():
 
     # --- 6. Save report ---
     csv_tag = os.path.splitext(os.path.basename(args.csv))[0]
+    # Compute per-cluster seed support for report
+    cluster_details = []
+    for rep_idx, members in clusters:
+        cluster_seeds = set()
+        for m in members:
+            if m < len(provenance):
+                cluster_seeds |= provenance[m]
+        cluster_details.append({
+            "representative": rep_idx,
+            "representative_formula": decode_formula(formulas[rep_idx], feat_names),
+            "representative_score": scores[rep_idx],
+            "n_members": len(members),
+            "seed_support": sorted(cluster_seeds),
+        })
+
     report = {
         "config": {
             "csv": os.path.basename(args.csv),
@@ -618,24 +792,30 @@ def main():
             "train_ratio": args.train_ratio,
             "fee": args.fee,
             "max_corr": args.max_corr,
+            "min_score": args.min_score,
+            "max_turnover": args.max_turnover,
+            "min_seed_support": args.min_seed_support,
             "wf_days": args.wf_days,
-            "seed": args.seed,
+            "seeds": seeds,
         },
         "time_meta": {k: v for k, v in time_meta.items() if k != "test_timestamps"},
+        "discovery": {
+            "n_seeds": len(seeds),
+            "n_unique_formulas": filter_stats["total"],
+            "per_seed": per_seed,
+        },
+        "filtering": {
+            "pre_filter": filter_stats["total"],
+            "dropped_score": filter_stats["dropped_score"],
+            "dropped_turnover": filter_stats["dropped_turnover"],
+            "post_filter": filter_stats["kept"],
+        },
         "clustering": {
             "n_candidates": len(formulas),
             "n_valid_signals": len(signals),
             "n_clusters": len(clusters),
             "selected_indices": selected,
-            "clusters": [
-                {
-                    "representative": rep_idx,
-                    "representative_formula": decode_formula(formulas[rep_idx], feat_names),
-                    "representative_score": scores[rep_idx],
-                    "n_members": len(members),
-                }
-                for rep_idx, members in clusters
-            ],
+            "clusters": cluster_details,
         },
         "portfolio": wf_results["portfolio"],
         "individual_formulas": wf_results["individual_formulas"],

@@ -154,7 +154,7 @@ class AdvancedFactorEngineer:
 
 
 class FeatureEngineer:
-    INPUT_DIM = 6
+    INPUT_DIM = 10
 
     @staticmethod
     def compute_features(raw_dict):
@@ -165,14 +165,21 @@ class FeatureEngineer:
         v = raw_dict['volume']
         liq = raw_dict['liquidity']
         fdv = raw_dict['fdv']
-        
+
         ret = torch.log(c / (torch.roll(c, 1, dims=1) + 1e-9))
         liq_score = MemeIndicators.liquidity_health(liq, fdv)
         pressure = MemeIndicators.buy_sell_imbalance(c, o, h, l)
         fomo = MemeIndicators.fomo_acceleration(v)
         dev = MemeIndicators.pump_deviation(c)
         log_vol = torch.log1p(v)
-        
+
+        # New features
+        vol_cluster = MemeIndicators.volatility_clustering(c)
+        hl_range = (h - l) / (c + 1e-9)
+        close_pos = (c - l) / (h - l + 1e-9)
+        vol_prev = torch.roll(v, 1, dims=1)
+        vol_trend = (v - vol_prev) / (vol_prev + 1.0)
+
         def robust_norm(t):
             median = torch.nanmedian(t, dim=1, keepdim=True)[0]
             mad = torch.nanmedian(torch.abs(t - median), dim=1, keepdim=True)[0] + 1e-6
@@ -180,12 +187,16 @@ class FeatureEngineer:
             return torch.clamp(norm, -5.0, 5.0)
 
         features = torch.stack([
-            robust_norm(ret),
-            liq_score,
-            pressure,
-            robust_norm(fomo),
-            robust_norm(dev),
-            robust_norm(log_vol)
+            robust_norm(ret),       # 0: RET
+            liq_score,              # 1: VOL
+            pressure,               # 2: V_CHG
+            robust_norm(fomo),      # 3: PV
+            robust_norm(dev),       # 4: TREND
+            robust_norm(log_vol),   # 5: LOG_V
+            robust_norm(vol_cluster),  # 6: VOL_CLU
+            robust_norm(hl_range),     # 7: HL_RNG
+            close_pos,                 # 8: CLS_POS (already 0-1)
+            robust_norm(vol_trend),    # 9: VOL_TRD
         ], dim=1)
-        
+
         return features

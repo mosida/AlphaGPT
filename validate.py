@@ -108,7 +108,8 @@ def load_split_data(csv_path, train_ratio=0.7, limit_tokens=None):
 
 def decode_formula(tokens, feat_names=None, ops_list=None):
     if feat_names is None:
-        feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V"]
+        feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V",
+                      "VOL_CLU", "HL_RNG", "CLS_POS", "VOL_TRD"]
     if ops_list is None:
         ops_list = [cfg[0] for cfg in OPS_CONFIG]
     feat_offset = len(feat_names)
@@ -255,7 +256,8 @@ def run_validation_once(args, train_data, test_data, time_meta, run_index=1, tot
     top_formulas = []
     reward_history = []
 
-    feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V"][:FeatureEngineer.INPUT_DIM]
+    feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V",
+                  "VOL_CLU", "HL_RNG", "CLS_POS", "VOL_TRD"][:FeatureEngineer.INPUT_DIM]
     fee_start, fee_end = 0.0005, args.fee
 
     print(f"\n--- Phase 1: Training on train set ({args.steps} steps) ---")

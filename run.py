@@ -30,7 +30,8 @@ from model_core.factors import FeatureEngineer
 def decode_formula(tokens, feat_names=None, ops_list=None):
     """Convert token IDs back to human-readable formula."""
     if feat_names is None:
-        feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V"]
+        feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V",
+                      "VOL_CLU", "HL_RNG", "CLS_POS", "VOL_TRD"]
     if ops_list is None:
         ops_list = [cfg[0] for cfg in OPS_CONFIG]
     feat_offset = len(feat_names)
@@ -86,7 +87,8 @@ def main():
     best_formula = None
     history = {"step": [], "avg_reward": [], "best_score": [], "stable_rank": []}
 
-    feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V"][: FeatureEngineer.INPUT_DIM]
+    feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V",
+                  "VOL_CLU", "HL_RNG", "CLS_POS", "VOL_TRD"][:FeatureEngineer.INPUT_DIM]
 
     # Fee curriculum: ramp from 0.05% to 0.1% (Binance spot)
     fee_start, fee_end = 0.0005, 0.001

@@ -54,7 +54,8 @@ def set_seed(seed):
 
 def decode_formula(tokens, feat_names=None, ops_list=None):
     if feat_names is None:
-        feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V"]
+        feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V",
+                      "VOL_CLU", "HL_RNG", "CLS_POS", "VOL_TRD"]
     if ops_list is None:
         ops_list = [cfg[0] for cfg in OPS_CONFIG]
     feat_offset = len(feat_names)
@@ -614,7 +615,8 @@ def main():
     if args.min_seed_support is None:
         args.min_seed_support = 2 if len(seeds) > 1 else 1
 
-    feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V"][:FeatureEngineer.INPUT_DIM]
+    feat_names = ["RET", "VOL", "V_CHG", "PV", "TREND", "LOG_V",
+                  "VOL_CLU", "HL_RNG", "CLS_POS", "VOL_TRD"][:FeatureEngineer.INPUT_DIM]
     out_dir = os.path.dirname(os.path.abspath(__file__))
 
     print("=" * 60)

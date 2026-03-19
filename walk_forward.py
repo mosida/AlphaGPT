@@ -701,75 +701,76 @@ def main():
     if not selected:
         print("\n  No clusters survived seed-support filter.")
         print("  Conclusion: current search space has no cross-seed reproducible alpha.")
-        return
+        wf_results = None
+    else:
+        # --- 3b. Compute normalization stats from TRAINING data (causal) ---
+        norm_stats = compute_norm_stats(formulas, selected, train_feat, vm)
+        print(f"  Norm stats: computed from training set for {len(norm_stats)} formulas")
 
-    # --- 3b. Compute normalization stats from TRAINING data (causal) ---
-    norm_stats = compute_norm_stats(formulas, selected, train_feat, vm)
-    print(f"  Norm stats: computed from training set for {len(norm_stats)} formulas")
+        # --- 4. Walk-forward evaluation ---
+        print(f"\n--- Phase 3: Walk-Forward Evaluation ---")
+        print(f"  Portfolio: {len(selected)} diverse formulas")
+        print(f"  Normalization: train-set mean/std (causal, no look-ahead)")
+        print(f"  Window: {args.wf_days} days")
+        print(f"  Fee: {args.fee*100:.2f}% (fixed)\n")
 
-    # --- 4. Walk-forward evaluation ---
-    print(f"\n--- Phase 3: Walk-Forward Evaluation ---")
-    print(f"  Portfolio: {len(selected)} diverse formulas")
-    print(f"  Normalization: train-set mean/std (causal, no look-ahead)")
-    print(f"  Window: {args.wf_days} days")
-    print(f"  Fee: {args.fee*100:.2f}% (fixed)\n")
-
-    wf_results = walk_forward_evaluate(
-        formulas, selected, train_data, test_data,
-        norm_stats, time_meta, args, feat_names
-    )
+        wf_results = walk_forward_evaluate(
+            formulas, selected, train_data, test_data,
+            norm_stats, time_meta, args, feat_names
+        )
 
     # --- 5. Print results ---
-    # Individual formula results
-    print(f"{'Idx':<5} {'Score':>8} {'Return':>9} {'Turn':>6}  Formula")
-    print("-" * 80)
-    for fr in wf_results["individual_formulas"]:
-        score_str = f"{fr['score']:+.4f}" if fr["score"] is not None else "   N/A"
-        ret_str = f"{fr['return']:+.2%}" if fr["return"] is not None else "   N/A"
-        turn_str = f"{fr['turnover']:.1f}" if fr["turnover"] is not None else " N/A"
-        print(f"  {fr['index']:<3} {score_str:>8} {ret_str:>9} {turn_str:>6}  {fr['readable']}")
+    if wf_results is not None:
+        # Individual formula results
+        print(f"{'Idx':<5} {'Score':>8} {'Return':>9} {'Turn':>6}  Formula")
+        print("-" * 80)
+        for fr in wf_results["individual_formulas"]:
+            score_str = f"{fr['score']:+.4f}" if fr["score"] is not None else "   N/A"
+            ret_str = f"{fr['return']:+.2%}" if fr["return"] is not None else "   N/A"
+            turn_str = f"{fr['turnover']:.1f}" if fr["turnover"] is not None else " N/A"
+            print(f"  {fr['index']:<3} {score_str:>8} {ret_str:>9} {turn_str:>6}  {fr['readable']}")
 
-    # Portfolio summary
-    pf = wf_results["portfolio"]
-    print(f"\n  Portfolio ({pf['n_formulas']} formulas, {pf['normalization']}):")
-    if pf["full_test_score"] is not None:
-        print(f"    Full test score:    {pf['full_test_score']:+.4f}")
-        print(f"    Full test return:   {pf['full_test_return']:+.2%}")
-        print(f"    Full test turnover: {pf['full_test_turnover']:.1f}")
-    else:
-        print(f"    Portfolio signal failed on test set.")
+        # Portfolio summary
+        pf = wf_results["portfolio"]
+        print(f"\n  Portfolio ({pf['n_formulas']} formulas, {pf['normalization']}):")
+        if pf["full_test_score"] is not None:
+            print(f"    Full test score:    {pf['full_test_score']:+.4f}")
+            print(f"    Full test return:   {pf['full_test_return']:+.2%}")
+            print(f"    Full test turnover: {pf['full_test_turnover']:.1f}")
+        else:
+            print(f"    Portfolio signal failed on test set.")
 
-    # Bar-level equity curve metrics
-    eq = wf_results["equity_curve"]
-    print(f"\n  === Bar-Level Equity Curve ===")
-    print(f"    Cumulative return:  {eq['cumulative_return']:+.4%}" if eq["cumulative_return"] is not None else "    Cumulative return:  N/A")
-    if eq["annualized_return"] is not None:
-        print(f"    Annualized return:  {eq['annualized_return']:+.4%}")
-    print(f"    Max drawdown (bar): {eq['max_drawdown_bar']:.4%}" if eq["max_drawdown_bar"] is not None else "    Max drawdown (bar): N/A")
-    print(f"    Sharpe (annualized):{eq['sharpe_annualized']:+.3f}" if eq["sharpe_annualized"] is not None else "    Sharpe (annualized):N/A")
-    print(f"    Resolution:         {eq['total_bars']} bars ({eq['bars_per_day']} bars/day)")
+        # Bar-level equity curve metrics
+        eq = wf_results["equity_curve"]
+        print(f"\n  === Bar-Level Equity Curve ===")
+        print(f"    Cumulative return:  {eq['cumulative_return']:+.4%}" if eq["cumulative_return"] is not None else "    Cumulative return:  N/A")
+        if eq["annualized_return"] is not None:
+            print(f"    Annualized return:  {eq['annualized_return']:+.4%}")
+        print(f"    Max drawdown (bar): {eq['max_drawdown_bar']:.4%}" if eq["max_drawdown_bar"] is not None else "    Max drawdown (bar): N/A")
+        print(f"    Sharpe (annualized):{eq['sharpe_annualized']:+.3f}" if eq["sharpe_annualized"] is not None else "    Sharpe (annualized):N/A")
+        print(f"    Resolution:         {eq['total_bars']} bars ({eq['bars_per_day']} bars/day)")
 
-    # Walk-forward windows
-    wf = wf_results["walk_forward"]
-    print(f"\n  Walk-Forward Windows ({wf['n_windows']} x ~{args.wf_days}d):")
-    print(f"  {'#':<3} {'Period':<45} {'Days':>5} {'Return':>8} {'Ret/30d':>8} {'MaxDD':>8} {'Sharpe':>7} {'Turn':>6}")
-    print("  " + "-" * 95)
-    for w in wf["windows"]:
-        ret_str = f"{w['portfolio_return']:+.2%}" if w["portfolio_return"] is not None else "   N/A"
-        ret30_str = f"{w['portfolio_return_per_30d']:+.2%}" if w["portfolio_return_per_30d"] is not None else "   N/A"
-        dd_str = f"{w['portfolio_max_dd']:.2%}" if w["portfolio_max_dd"] is not None else "  N/A"
-        sh_str = f"{w['portfolio_sharpe_ann']:+.2f}" if w["portfolio_sharpe_ann"] is not None else "  N/A"
-        turn_str = f"{w['portfolio_turnover']:.1f}" if w["portfolio_turnover"] is not None else " N/A"
-        print(f"  {w['window']:<3} {w['period']:<45} {w['days']:>5} {ret_str:>8} {ret30_str:>8} {dd_str:>8} {sh_str:>7} {turn_str:>6}")
+        # Walk-forward windows
+        wf = wf_results["walk_forward"]
+        print(f"\n  Walk-Forward Windows ({wf['n_windows']} x ~{args.wf_days}d):")
+        print(f"  {'#':<3} {'Period':<45} {'Days':>5} {'Return':>8} {'Ret/30d':>8} {'MaxDD':>8} {'Sharpe':>7} {'Turn':>6}")
+        print("  " + "-" * 95)
+        for w in wf["windows"]:
+            ret_str = f"{w['portfolio_return']:+.2%}" if w["portfolio_return"] is not None else "   N/A"
+            ret30_str = f"{w['portfolio_return_per_30d']:+.2%}" if w["portfolio_return_per_30d"] is not None else "   N/A"
+            dd_str = f"{w['portfolio_max_dd']:.2%}" if w["portfolio_max_dd"] is not None else "  N/A"
+            sh_str = f"{w['portfolio_sharpe_ann']:+.2f}" if w["portfolio_sharpe_ann"] is not None else "  N/A"
+            turn_str = f"{w['portfolio_turnover']:.1f}" if w["portfolio_turnover"] is not None else " N/A"
+            print(f"  {w['window']:<3} {w['period']:<45} {w['days']:>5} {ret_str:>8} {ret30_str:>8} {dd_str:>8} {sh_str:>7} {turn_str:>6}")
 
-    # Aggregate
-    print(f"\n  === Walk-Forward Summary ===")
-    print(f"    Test window:        {time_meta['test_days']} days ({eq['total_bars']} bars)")
-    print(f"    WF windows:         {wf['n_windows']}")
-    if wf["win_rate"] is not None:
-        print(f"    Positive windows:   {wf['positive_windows']} / {wf['n_windows']} ({wf['win_rate']:.0%})")
+        # Aggregate
+        print(f"\n  === Walk-Forward Summary ===")
+        print(f"    Test window:        {time_meta['test_days']} days ({eq['total_bars']} bars)")
+        print(f"    WF windows:         {wf['n_windows']}")
+        if wf["win_rate"] is not None:
+            print(f"    Positive windows:   {wf['positive_windows']} / {wf['n_windows']} ({wf['win_rate']:.0%})")
 
-    # --- 6. Save report ---
+    # --- 6. Save report (always, even on 0 clusters) ---
     csv_tag = os.path.splitext(os.path.basename(args.csv))[0]
     # Compute per-cluster seed support for report
     cluster_details = []
@@ -785,6 +786,25 @@ def main():
             "n_members": len(members),
             "seed_support": sorted(cluster_seeds),
         })
+
+    # Also record all pre-seed-filter clusters for diagnostics
+    pre_filter_clusters = []
+    scores_dict_all = {i: scores[i] for i in range(len(scores))}
+    _, all_clusters = greedy_cluster(formulas, scores_dict_all, signals, max_corr=args.max_corr)
+    for rep_idx, members in all_clusters:
+        cluster_seeds = set()
+        for m in members:
+            if m < len(provenance):
+                cluster_seeds |= provenance[m]
+        pre_filter_clusters.append({
+            "representative": rep_idx,
+            "representative_formula": decode_formula(formulas[rep_idx], feat_names),
+            "representative_score": scores[rep_idx],
+            "n_members": len(members),
+            "seed_support": sorted(cluster_seeds),
+        })
+
+    empty_wf = {"portfolio": None, "individual_formulas": [], "equity_curve": None, "walk_forward": None}
 
     report = {
         "config": {
@@ -818,11 +838,12 @@ def main():
             "n_clusters": len(clusters),
             "selected_indices": selected,
             "clusters": cluster_details,
+            "pre_seed_filter_clusters": pre_filter_clusters,
         },
-        "portfolio": wf_results["portfolio"],
-        "individual_formulas": wf_results["individual_formulas"],
-        "equity_curve": wf_results["equity_curve"],
-        "walk_forward": wf_results["walk_forward"],
+        "portfolio": (wf_results or empty_wf)["portfolio"],
+        "individual_formulas": (wf_results or empty_wf)["individual_formulas"],
+        "equity_curve": (wf_results or empty_wf)["equity_curve"],
+        "walk_forward": (wf_results or empty_wf)["walk_forward"],
     }
 
     report_path = os.path.join(out_dir, f"wf_report_{csv_tag}.json")
